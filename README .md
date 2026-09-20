@@ -1,5 +1,10 @@
 # ZEBRA-SCAN
 
+Link for website version: [https://zennyz3n.github.io/ZEBRA-SCAN/](https://zennyz3n.github.io/ZEBRA-SCAN/)
+
+
+You can refer to the Notebook for the code. Please remember to run the runtime at T4 GPU.
+
 ## AI-Assisted Zebrafish Developmental Phenotype Screening
 
 ZEBRA-SCAN is a multi-label deep-learning system for screening developmental abnormalities in zebrafish bright-field microscopy images.
