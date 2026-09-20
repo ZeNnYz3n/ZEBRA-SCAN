@@ -1,0 +1,22 @@
+{
+    "phenotypes": [
+        "bent_spine",
+        "jaw_malformation",
+        "swim_bladder_absence",
+        "yolk_edema",
+        "pericardial_edema",
+        "dead",
+        "head_hemorrhage",
+        "unhatched_embryo"
+    ],
+    "thresholds": {
+        "bent_spine": 0.45,
+        "jaw_malformation": 0.39,
+        "swim_bladder_absence": 0.65,
+        "yolk_edema": 0.60,
+        "pericardial_edema": 0.68,
+        "dead": 0.85,
+        "head_hemorrhage": 0.90,
+        "unhatched_embryo": 0.24
+    }
+}
