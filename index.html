@@ -1,0 +1,1035 @@
+
+<!DOCTYPE html>
+
+<html lang="en">
+
+<head>
+
+<meta charset="UTF-8">
+
+<meta name="viewport"
+      content="width=device-width, initial-scale=1.0">
+
+<title>ZEBRA-SCAN</title>
+
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js"></script>
+
+<style>
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    font-family: Arial, sans-serif;
+    background: #0f1115;
+    color: #f5f7fa;
+}
+
+.container {
+    max-width: 1200px;
+    margin: auto;
+    padding: 35px 22px;
+}
+
+h1 {
+    margin-bottom: 5px;
+    font-size: 40px;
+}
+
+.subtitle {
+    color: #aeb6c2;
+    margin-bottom: 30px;
+}
+
+.card {
+    background: #181b21;
+    border: 1px solid #292e37;
+    border-radius: 14px;
+    padding: 24px;
+    margin-bottom: 22px;
+}
+
+.upload {
+    border: 2px dashed #3c4350;
+    border-radius: 12px;
+    padding: 30px;
+    text-align: center;
+}
+
+input[type=file] {
+    margin: 15px;
+}
+
+button {
+    background: #ff6b00;
+    border: none;
+    color: white;
+    padding: 13px 25px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 15px;
+    font-weight: bold;
+}
+
+button:disabled {
+    opacity: .45;
+    cursor: not-allowed;
+}
+
+#preview {
+    max-width: 100%;
+    max-height: 380px;
+    margin-top: 20px;
+    border-radius: 10px;
+    display: none;
+}
+
+.status {
+    margin-top: 15px;
+    color: #aeb6c2;
+}
+
+.summary {
+    margin: 15px 0;
+    font-size: 17px;
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+th, td {
+    padding: 13px;
+    border-bottom: 1px solid #292e37;
+    text-align: left;
+}
+
+th {
+    color: #aeb6c2;
+}
+
+.present {
+    font-weight: bold;
+}
+
+.absent {
+    color: #777f8c;
+}
+
+.cam-controls {
+    display: flex;
+    gap: 15px;
+    flex-wrap: wrap;
+    align-items: center;
+}
+
+select {
+    background: #101319;
+    color: white;
+    border: 1px solid #3c4350;
+    border-radius: 7px;
+    padding: 11px;
+}
+
+#camCanvas {
+    width: 100%;
+    max-width: 700px;
+    border-radius: 10px;
+    margin-top: 20px;
+}
+
+.note {
+    color: #8f98a6;
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+</style>
+
+</head>
+
+
+<body>
+
+<div class="container">
+
+<h1>ZEBRA-SCAN</h1>
+
+<div class="subtitle">
+AI-assisted zebrafish developmental phenotype screening
+</div>
+
+
+<div class="card">
+
+<h2>Upload Zebrafish Image</h2>
+
+<div class="upload">
+
+<input
+    id="imageInput"
+    type="file"
+    accept="image/png,image/jpeg"
+>
+
+<br>
+
+<img id="preview">
+
+<br><br>
+
+<button
+    id="analyzeButton"
+    disabled
+>
+Analyze Image
+</button>
+
+<div
+    id="status"
+    class="status"
+>
+Loading five A1 models...
+</div>
+
+</div>
+
+</div>
+
+
+<div
+    id="resultsCard"
+    class="card"
+    style="display:none;"
+>
+
+<h2>Screening Results</h2>
+
+<div
+    id="summary"
+    class="summary"
+></div>
+
+<table>
+
+<thead>
+
+<tr>
+<th>Phenotype</th>
+<th>Probability</th>
+<th>Threshold</th>
+<th>Prediction</th>
+</tr>
+
+</thead>
+
+<tbody id="resultsBody"></tbody>
+
+</table>
+
+</div>
+
+
+<div
+    id="camCard"
+    class="card"
+    style="display:none;"
+>
+
+<h2>Grad-CAM</h2>
+
+<p class="note">
+Grad-CAM highlights image regions contributing to
+the selected phenotype output. It is an explanatory
+visualization and is not a biological ground-truth map.
+</p>
+
+<div class="cam-controls">
+
+<select id="phenotypeSelect"></select>
+
+<button id="camButton">
+Generate Grad-CAM
+</button>
+
+</div>
+
+<canvas id="camCanvas"></canvas>
+
+</div>
+
+
+<div class="card">
+
+<h3>Model Information</h3>
+
+<p>
+Frozen five-fold ResNet18 ensemble.
+</p>
+
+<p>
+Multi-label prediction of eight zebrafish
+developmental phenotypes using phenotype-specific
+frozen decision thresholds.
+</p>
+
+<p class="note">
+Research screening tool — not a diagnostic system.
+</p>
+
+</div>
+
+</div>
+
+
+<script>
+
+
+// ============================================
+// Configuration
+// ============================================
+
+let CLASSIFIER_WEIGHTS = [];
+
+async function loadClassifierWeights() {
+
+    const response =
+        await fetch("classifier_weights.json");
+
+    CLASSIFIER_WEIGHTS =
+        await response.json();
+}
+
+const PHENOTYPES = [
+    "bent_spine",
+    "jaw_malformation",
+    "swim_bladder_absence",
+    "yolk_edema",
+    "pericardial_edema",
+    "dead",
+    "head_hemorrhage",
+    "unhatched_embryo"
+];
+
+let THRESHOLDS = [];
+
+let sessions = [];
+
+let selectedImage = null;
+
+
+// ============================================
+// Load config
+// ============================================
+
+async function loadConfig() {
+
+    const response =
+        await fetch("classes.json");
+
+    const config =
+        await response.json();
+
+    THRESHOLDS =
+        PHENOTYPES.map(
+            p => config.thresholds[p]
+        );
+}
+
+
+// ============================================
+// Load five models
+// ============================================
+
+async function loadModels() {
+
+    for (let fold = 0; fold < 5; fold++) {
+
+        document.getElementById(
+            "status"
+        ).innerText =
+            `Loading model ${fold + 1}/5...`;
+
+        const session =
+            await ort.InferenceSession.create(
+                `models/A1_resnet18_fold${fold}.onnx`,
+                {
+                    executionProviders: ["wasm"]
+                }
+            );
+
+        sessions.push(session);
+    }
+
+    document.getElementById(
+        "status"
+    ).innerText =
+        "Ready — upload a zebrafish image.";
+
+    document.getElementById(
+        "analyzeButton"
+    ).disabled = false;
+}
+
+
+// ============================================
+// Preprocessing
+// ============================================
+
+async function preprocess(file) {
+
+    const bitmap =
+        await createImageBitmap(file);
+
+    const canvas =
+        document.createElement("canvas");
+
+    canvas.width = 224;
+    canvas.height = 224;
+
+    const ctx =
+        canvas.getContext("2d");
+
+    ctx.drawImage(
+        bitmap,
+        0,
+        0,
+        224,
+        224
+    );
+
+    const pixels =
+        ctx.getImageData(
+            0,
+            0,
+            224,
+            224
+        ).data;
+
+    const data =
+        new Float32Array(
+            3 * 224 * 224
+        );
+
+    const mean =
+        [0.485, 0.456, 0.406];
+
+    const std =
+        [0.229, 0.224, 0.225];
+
+    const plane =
+        224 * 224;
+
+    for (let y = 0; y < 224; y++) {
+
+        for (let x = 0; x < 224; x++) {
+
+            const p =
+                (y * 224 + x) * 4;
+
+            const i =
+                y * 224 + x;
+
+            data[i] =
+                (pixels[p] / 255 - mean[0])
+                / std[0];
+
+            data[plane + i] =
+                (pixels[p + 1] / 255 - mean[1])
+                / std[1];
+
+            data[2 * plane + i] =
+                (pixels[p + 2] / 255 - mean[2])
+                / std[2];
+        }
+    }
+
+    return {
+        data,
+        bitmap
+    };
+}
+
+
+// ============================================
+// Sigmoid
+// ============================================
+
+function sigmoid(x) {
+
+    return 1 /
+        (1 + Math.exp(-x));
+}
+
+
+// ============================================
+// Ensemble inference
+// ============================================
+
+async function runEnsemble(file) {
+
+    const processed =
+        await preprocess(file);
+
+    const tensor =
+        new ort.Tensor(
+            "float32",
+            processed.data,
+            [1, 3, 224, 224]
+        );
+
+    const logitsAll = [];
+
+    const featuresAll = [];
+
+    for (const session of sessions) {
+
+        const output =
+            await session.run({
+                [session.inputNames[0]]:
+                    tensor
+            });
+
+        const logits =
+            output[
+                session.outputNames[0]
+            ].data;
+
+        const features =
+            output[
+                session.outputNames[1]
+            ].data;
+
+        logitsAll.push(
+            Array.from(logits)
+        );
+
+        featuresAll.push(
+            Array.from(features)
+        );
+    }
+
+    const probabilities =
+        new Array(8).fill(0);
+
+    for (const logits of logitsAll) {
+
+        for (let i = 0; i < 8; i++) {
+
+            probabilities[i] +=
+                sigmoid(logits[i]) / 5;
+        }
+    }
+
+    return {
+        probabilities,
+        featuresAll,
+        bitmap: processed.bitmap
+    };
+}
+
+
+// ============================================
+// Display results
+// ============================================
+
+function displayResults(probabilities) {
+
+    const body =
+        document.getElementById(
+            "resultsBody"
+        );
+
+    body.innerHTML = "";
+
+    const detected = [];
+
+    for (
+        let i = 0;
+        i < PHENOTYPES.length;
+        i++
+    ) {
+
+        const p =
+            probabilities[i];
+
+        const threshold =
+            THRESHOLDS[i];
+
+        const present =
+            p >= threshold;
+
+        if (present)
+            detected.push(
+                PHENOTYPES[i]
+            );
+
+        const row =
+            document.createElement("tr");
+
+        row.innerHTML = `
+            <td>${PHENOTYPES[i]}</td>
+            <td>${(p * 100).toFixed(2)}%</td>
+            <td>${threshold.toFixed(2)}</td>
+            <td class="${
+                present
+                ? "present"
+                : "absent"
+            }">
+                ${present ? "PRESENT" : "ABSENT"}
+            </td>
+        `;
+
+        body.appendChild(row);
+    }
+
+    document.getElementById(
+        "summary"
+    ).innerText =
+        detected.length
+        ? "Detected phenotypes: " +
+          detected.join(", ")
+        : "No target phenotype detected above the frozen decision thresholds.";
+
+    const select =
+        document.getElementById(
+            "phenotypeSelect"
+        );
+
+    select.innerHTML = "";
+
+    for (const p of PHENOTYPES) {
+
+        const option =
+            document.createElement(
+                "option"
+            );
+
+        option.value = p;
+        option.textContent = p;
+
+        select.appendChild(option);
+    }
+
+    document.getElementById(
+        "resultsCard"
+    ).style.display = "block";
+
+    document.getElementById(
+        "camCard"
+    ).style.display = "block";
+}
+
+
+// ============================================
+// Grad-CAM
+//
+// ResNet18 final layer:
+// layer4 → GAP → Linear
+//
+// Therefore d(score)/d(feature)
+// is the corresponding classifier weight.
+// ============================================
+
+async function generateGradCAM() {
+
+    if (!selectedImage)
+        return;
+
+    const phenotype =
+        document.getElementById(
+            "phenotypeSelect"
+        ).value;
+
+    const classIndex =
+        PHENOTYPES.indexOf(
+            phenotype
+        );
+
+    const processed =
+        await preprocess(
+            selectedImage
+        );
+
+    const tensor =
+        new ort.Tensor(
+            "float32",
+            processed.data,
+            [1, 3, 224, 224]
+        );
+
+    const cams = [];
+
+    for (const session of sessions) {
+
+        const output =
+            await session.run({
+                [session.inputNames[0]]:
+                    tensor
+            });
+
+        const features =
+            output[
+                session.outputNames[1]
+            ].data;
+
+        /*
+         * ResNet18 layer4 feature map:
+         * 512 channels × 7 × 7
+         */
+
+        const featureSize =
+            512 * 7 * 7;
+
+        /*
+         * We need classifier weights.
+         * They are loaded below from model
+         * weight JSON.
+         */
+
+        const weights =
+            CLASSIFIER_WEIGHTS[
+                sessions.indexOf(session)
+            ][classIndex];
+
+        const cam =
+            new Float32Array(
+                7 * 7
+            );
+
+        for (let c = 0; c < 512; c++) {
+
+            const weight =
+                weights[c];
+
+            for (let i = 0; i < 49; i++) {
+
+                cam[i] +=
+                    weight *
+                    features[
+                        c * 49 + i
+                    ];
+            }
+        }
+
+        let max = -Infinity;
+        let min = Infinity;
+
+        for (const v of cam) {
+
+            if (v > max) max = v;
+            if (v < min) min = v;
+        }
+
+        for (let i = 0; i < 49; i++) {
+
+            cam[i] =
+                Math.max(
+                    0,
+                    cam[i]
+                );
+
+            if (max > 0)
+                cam[i] /= max;
+        }
+
+        cams.push(cam);
+    }
+
+    /*
+     * Average five-fold CAMs
+     */
+
+    const ensemble =
+        new Float32Array(49);
+
+    for (const cam of cams) {
+
+        for (let i = 0; i < 49; i++) {
+
+            ensemble[i] +=
+                cam[i] / 5;
+        }
+    }
+
+    drawCAM(
+        processed.bitmap,
+        ensemble
+    );
+}
+
+
+// ============================================
+// Draw heatmap
+// ============================================
+
+function drawCAM(bitmap, cam) {
+
+    const canvas =
+        document.getElementById(
+            "camCanvas"
+        );
+
+    canvas.width = 224;
+    canvas.height = 224;
+
+    const ctx =
+        canvas.getContext("2d");
+
+    ctx.drawImage(
+        bitmap,
+        0,
+        0,
+        224,
+        224
+    );
+
+    const image =
+        ctx.getImageData(
+            0,
+            0,
+            224,
+            224
+        );
+
+    for (let y = 0; y < 224; y++) {
+
+        for (let x = 0; x < 224; x++) {
+
+            const gx =
+                x / 224 * 6;
+
+            const gy =
+                y / 224 * 6;
+
+            const x0 =
+                Math.floor(gx);
+
+            const y0 =
+                Math.floor(gy);
+
+            const x1 =
+                Math.min(x0 + 1, 6);
+
+            const y1 =
+                Math.min(y0 + 1, 6);
+
+            const dx =
+                gx - x0;
+
+            const dy =
+                gy - y0;
+
+            const v00 =
+                cam[y0 * 7 + x0];
+
+            const v10 =
+                cam[y0 * 7 + x1];
+
+            const v01 =
+                cam[y1 * 7 + x0];
+
+            const v11 =
+                cam[y1 * 7 + x1];
+
+            const v =
+                v00 * (1-dx) * (1-dy) +
+                v10 * dx * (1-dy) +
+                v01 * (1-dx) * dy +
+                v11 * dx * dy;
+
+            const p =
+                (y * 224 + x) * 4;
+
+            /*
+             * Simple blue → red heatmap
+             */
+
+            const r =
+                Math.round(
+                    255 * v
+                );
+
+            const g =
+                Math.round(
+                    80 * (1-v)
+                );
+
+            const b =
+                Math.round(
+                    255 * (1-v)
+                );
+
+            image.data[p] =
+                image.data[p] * 0.55 +
+                r * 0.45;
+
+            image.data[p+1] =
+                image.data[p+1] * 0.55 +
+                g * 0.45;
+
+            image.data[p+2] =
+                image.data[p+2] * 0.55 +
+                b * 0.45;
+        }
+    }
+
+    ctx.putImageData(
+        image,
+        0,
+        0
+    );
+}
+
+
+// ============================================
+// Image selection
+// ============================================
+
+document
+.getElementById("imageInput")
+.addEventListener(
+    "change",
+    event => {
+
+        const file =
+            event.target.files[0];
+
+        if (!file)
+            return;
+
+        selectedImage = file;
+
+        const preview =
+            document.getElementById(
+                "preview"
+            );
+
+        preview.src =
+            URL.createObjectURL(file);
+
+        preview.style.display =
+            "block";
+    }
+);
+
+
+// ============================================
+// Analyze
+// ============================================
+
+document
+.getElementById("analyzeButton")
+.addEventListener(
+    "click",
+    async () => {
+
+        const button =
+            document.getElementById(
+                "analyzeButton"
+            );
+
+        button.disabled = true;
+
+        document.getElementById(
+            "status"
+        ).innerText =
+            "Running five-model ensemble...";
+
+        try {
+
+            const output =
+                await runEnsemble(
+                    selectedImage
+                );
+
+            window.lastOutput =
+                output;
+
+            displayResults(
+                output.probabilities
+            );
+
+            document.getElementById(
+                "status"
+            ).innerText =
+                "Analysis complete.";
+
+        } catch (error) {
+
+            console.error(error);
+
+            document.getElementById(
+                "status"
+            ).innerText =
+                "Inference error: " +
+                error.message;
+        }
+
+        button.disabled = false;
+    }
+);
+
+
+// ============================================
+// Grad-CAM button
+// ============================================
+
+document
+.getElementById("camButton")
+.addEventListener(
+    "click",
+    async () => {
+
+        try {
+
+            await generateGradCAM();
+
+        } catch (error) {
+
+            console.error(error);
+
+            alert(
+                "Grad-CAM error: " +
+                error.message
+            );
+        }
+    }
+);
+
+
+// ============================================
+// Start
+// ============================================
+
+(async function() {
+
+    try {
+
+        await loadConfig();
+
+        await loadClassifierWeights();
+
+        await loadModels();
+
+    } catch (error) {
+
+        console.error(error);
+
+        document.getElementById(
+            "status"
+        ).innerText =
+            "Failed to load models: " +
+            error.message;
+    }
+
+})();
+
+</script>
+
+</body>
+
+</html>
